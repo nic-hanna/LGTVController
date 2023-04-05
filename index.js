@@ -65,40 +65,39 @@ app.get('/schedule', (req, res) => {
     res.render('schedule')
 })
 
+//Management
+app.post('/manage/tv/new', (req, res) => {
+    if (!req.body.ip || !req.body.keycode) return res.status(400).send("Missing either IP or keycode");
+    db.prepare('INSERT INTO tvs (ip, mac, keycode, name) VALUES (?, ?, ?, ?)')
+    .run(req.body.ip, req.query.mac, req.body.keycode, req.query.name);
+    res.send(200)
+})
+
+app.post('/manage/tv/update', (req, res) => {
+    if (!req.body.id) return res.status(400).send("Missing TV id");
+})
+
 
 //API
 app.get('/api/volume/:tv', (req, res) => {
-    var tv = tvList[req.params.tv];
-    if (!tv) return res.sendStatus(400);
-    tv.getCurrentVolume().then(volume => {
-        tv.getMuteState().then(muteState => {
-            res.status(200).send({
-                "mute": muteState,
-                "volume": volume
-            });
-        }).catch(err => {
-            res.status(500).send(err);
-        })
-    }).catch(err => {
-        res.status(500).send(err);
-    })
+    if (!tvList[req.params.tv]) return res.status(400).send("Invalid TV id: " + req.params.tv + ".");
+    tvList[req.params.tv].connect().then(async () => {
+        var volume = await tvList[req.params.tv].getCurrentVolume();
+        var muteState = await tvList[req.params.tv].getMuteState();
+        res.status(200).send({
+            "mute": muteState,
+            "volume": volume
+        });
+        tvList[req.params.tv].disconnect();
+    });
 });
 
 app.get('/api/ipControlState/:tv', (req, res) => {
-    var tv = tvList[req.params.tv];
-    if (!tv) return res.status(400).send("Invalid TV id: " + tv.id + ".");
-    tv.getIpControlState().then((controlState) => {
-        console.log(controlState);
+    if (!tvList[req.params.tv]) return res.status(400).send("Invalid TV id: " + req.params.tv + ".");
+    tvList[req.params.tv].connect().then(async () => {
+        var controlState = await tvList[req.params.tv].getIpControlState();
         res.status(200).send(controlState);
-    })
-});
-
-app.get('/api/muteState/:tv', (req, res) => {
-    var tv = tvList[req.params.tv];
-    if (!tv) return res.status(400).send("Invalid TV id: " + tv.id + ".");
-    tv.getMuteState().then((muteState) => {
-        console.log(muteState);
-        res.status(200).send(muteState);
+        tvList[req.params.tv].disconnect();
     })
 });
 
@@ -123,6 +122,7 @@ app.post('/api/power/:tvs/:state', (req, res) => {
     var tvs = req.params.tvs.split(',');
     var errors = "";
     tvs.forEach(tv => {
+        if (!tvList[tv]) return errors += "Invalid TV id: " + tv.id + ".<br>";
         tvList[tv].connect()
         .then( async () => {
             if (req.params.state == "on") {
@@ -140,18 +140,19 @@ app.post('/api/power/:tvs/:state', (req, res) => {
 
 var allowedInputs = ["dtv", "atv", "cadtv", "catv", "av", "component", "hdmi1", "hdmi2", "hdmi3", "hdmi4"]
 app.post('/api/input/:tvs/:input', (req, res) => {
-    var tvs = req.params.tvs.split(',');
     var input = req.params.input;
     if (!allowedInputs.includes(input)) return res.status(400).send("Invalid input");
+    var tvs = req.params.tvs.split(',');
     var errors = "";
     tvs.forEach(tv => {
-        var tv = tvList[tv];
-        if (!tv) return errors += "Invalid TV id: " + tv.id + ".<br>";
-        tv.setInput(Inputs[input]).catch(err => {
-            errors += "Error setting input for TV " + tv.id + ": " + err + ".<br>";
+        if (!tvList[tv]) return errors += "Invalid TV id: " + tv.id + ".<br>";
+        tvList[tv].connect()
+        .then( async () => {
+            tvList[tv].setInput(input)
+            tvList[tv].disconnect();
         })
     })
-    if (!errors) return res.send(200);
+    if (!errors) return res.sendStatus(200);
     res.status(500).send(errors);
 })
 
@@ -159,52 +160,53 @@ app.post('/api/input/:tvs/:input', (req, res) => {
 
 //mute
 app.post('/api/mute/:tvs/:state', (req, res) => {
+    var state = !!+req.params.state;
+    if (![true, false].includes(state)) return res.status(400).send("Invaild state");
     var tvs = req.params.tvs.split(',');
-    var state = req.params.state;
-    if (state !== "1" || state !== "0") return res.status(400).send("Invaild state");
     var errors = "";
     tvs.forEach(tv => {
-        var tv = tvList[tv];
-        if (!tv) return errors += "Invalid TV id: " + tv.id + ".<br>";
-        tv.setVolumeMute(!!+state).catch(err => {
-            errors += "Error setting volume mute for TV " + tv.id + ": " + err + ".<br>";
-        })
+        if (!tvList[tv]) return errors += "Invalid TV id: " + tv.id + ".<br>";
+        tvList[tv].connect().then( async () => {
+            tvList[tv].setVolumeMute(state)
+            tvList[tv].disconnect();
+        });
     })
-    if (!errors) return res.send(200);
-    res.status(500).send(errors);
+    if (!errors) return res.sendStatus(200);
+    res.status(400).send(errors);
 });
 
 //sendKey
-var allowedKeys = ["arrowDown","arrowLeft","arrowRight","arrowUp","aspectRatio","audioMode","back","blueButton","captionSubtitle","channelDown","channelList","channelUp","deviceInput","energySaving","fastForward","greenButton","home","info","liveTV","menu","number0","number1","number2","number3","number4","number5","number6","number7","number8","number9","ok","play","previousChannel","programGuide","record","redButton","rewind","sleepTimer","userGuide","videoMode","volumeDown","volumeMute","volumeUp","yellowButton"]
+var allowedKeys = ["arrowdown","arrowleft","arrowright","arrowup","aspectratio","audiomode","returnback","bluebutton","captionsubtitle","channeldown","channellist","channelup","deviceinput","screenbright","fastforward","greenbutton","myapp","programminfo","livetv","settingmenu","number0","number1","number2","number3","number4","number5","number6","number7","number8","number9","ok","play","previouschannel","programguide","record","redbutton","rewind","sleepreserve","userguide","videomode","volumedown","volumemute","volumeup","yellowbutton"]
 app.post('/api/key/:tvs/:key', (req, res) => {
-    var tvs = req.params.tvs.split(',');
     var key = req.params.key;
+    console.log(key);
     if (!allowedKeys.includes(key)) return res.status(400).send("Invalid key");
+    var tvs = req.params.tvs.split(',');
     var errors = "";
     tvs.forEach(tv => {
-        var tv = tvList[tv];
-        if (!tv) return errors += "Invalid TV id: " + tv.id + ".<br>";
-        tv.sendKey(Keys[key]).catch(err => {
-            errors += "Error sending key for TV " + tv.id + ": " + err + ".<br>";
-        })
+        if (!tvList[tv]) return errors += "Invalid TV id: " + tv.id + ".<br>";
+        tvList[tv].connect().then( async () => {
+            tvList[tv].sendKey(key)
+            tvList[tv].disconnect();
+        });
     })
-    if (!errors) return res.send(200);
+    if (!errors) return res.sendStatus(200);
     res.status(500).send(errors);
 });
 
 //Energy Saving
 var allowedEnergySavingLevels = ["auto", "screenOff", "maximum", "medium", "minimum", "off"];
-app.post('/api/energyLevel/:tvs/:lvel', (req, res) => {
-    var tvs = req.params.tvs.split(',');
+app.post('/api/energyLevel/:tvs/:level', (req, res) => {
     var level = req.params.level;
     if (!allowedEnergySavingLevels.includes(level)) return res.status(400).send("Invalid level");
+    var tvs = req.params.tvs.split(',');
     var errors = "";
     tvs.forEach(tv => {
-        var tv = tvList[tv];
-        if (!tv) return errors += "Invalid TV id: " + tv.id + ".<br>";
-        tv.setEnergySaving(EnergySavingLevels[level]).catch(err => {
-            errors += "Error setting Enegery Saving Level for TV " + tv.id + ": " + err + ".<br>";
-        })
+        if (!tvList[tv]) return errors += "Invalid TV id: " + tv.id + ".<br>";
+        tvList[tv].connect().then( async () => {
+            tvList[tv].setEnergySaving(EnergySavingLevels[level])
+            tvList[tv].disconnect();
+        });
     })
     if (!errors) return res.send(200);
     res.status(500).send(errors);
